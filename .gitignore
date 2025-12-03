@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python 字节码和缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.log
+
+# 虚拟环境
+venv/
+tts-server/venv/
+
+# 编辑器配置
+.vscode/
+.idea/
+
+# TTS 生成的输出音频
+tts-server/outputs/
+
+
+# 环境配置
+.env
+.env.*

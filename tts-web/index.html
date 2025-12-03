@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>文本转语音 Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <h1>文本转语音</h1>
+      <textarea
+        id="text-input"
+        placeholder="在这里输入要朗读的文字..."
+      ></textarea>
+
+      <div class="controls">
+        <label>
+          语速
+          <input id="rate" type="range" min="0.5" max="2" step="0.1" value="1" />
+        </label>
+        <label>
+          音量
+          <input id="volume" type="range" min="0" max="1" step="0.1" value="1" />
+        </label>
+        <label>
+          语言
+          <select id="lang">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="buttons">
+        <button id="generate">生成语音</button>
+        <a id="download-link" class="download" href="#" download hidden>下载音频</a>
+      </div>
+      <p class="tip error" id="error-msg" hidden></p>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+  </html>
