@@ -7,10 +7,12 @@ import time
 import uuid
 import collections
 import builtins
+import re
 
+import numpy as np
 import torch
 from torch.serialization import add_safe_globals
-from TTS.api import TTS
+from TTS.utils.synthesizer import Synthesizer
 from TTS.utils.radam import RAdam
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
@@ -95,6 +97,42 @@ def trim_wav_silence(wav_path: Path, silence_thresh: int = -40, min_silence_ms: 
     trimmed.export(str(wav_path), format="wav")
 
 
+def normalize_zh_text(text: str) -> str:
+    """
+    对中文文本做基础清洗：
+    - 将特殊省略号、引号等统一为普通标点；
+    - 去掉模型词表中明显无法处理的控制字符。
+    """
+    # 统一各种引号
+    text = text.replace("“", "\"").replace("”", "\"")
+    text = text.replace("‘", "'").replace("’", "'")
+    # 统一省略号：视作句号处理，便于分句
+    text = text.replace("……", "。").replace("…", "。")
+    # 可以按需扩展更多替换规则
+    return text
+
+
+def split_zh_sentences(text: str) -> list[str]:
+    """
+    按中文标点手动切分句子，避免英文分句器对中文长段落切分不当。
+    """
+    parts = re.split(r"([。！？!?…])", text)
+    segments: list[str] = []
+    buf = ""
+    for part in parts:
+        if not part:
+            continue
+        buf += part
+        if part in "。！？!?…":
+            seg = buf.strip()
+            if seg:
+                segments.append(seg)
+            buf = ""
+    if buf.strip():
+        segments.append(buf.strip())
+    return [s for s in segments if s.strip()]
+
+
 def _find_model_files(model_dir: Path) -> tuple[Path, Path]:
     """
     在给定的模型目录中查找 checkpoint 和 config 文件。
@@ -132,8 +170,18 @@ def get_tts(lang: str):
     if key not in _tts_models:
         model_dir = LANG_MODEL_DIRS[key]
         model_path, config_path = _find_model_files(model_dir)
-        # 使用本地 checkpoint + config 加载模型，不触发任何在线下载逻辑
-        _tts_models[key] = TTS(model_path=str(model_path), config_path=str(config_path), progress_bar=False).to("cpu")
+        # 直接使用 Synthesizer 加载离线模型，绕过 TTS 包装层，避免版本差异带来的属性问题
+        _tts_models[key] = Synthesizer(
+            tts_checkpoint=str(model_path),
+            tts_config_path=str(config_path),
+            tts_speakers_file=None,
+            tts_languages_file=None,
+            vocoder_checkpoint=None,
+            vocoder_config=None,
+            encoder_checkpoint=None,
+            encoder_config=None,
+            use_cuda=False,
+        )
     return _tts_models[key], key
 
 
@@ -144,13 +192,56 @@ def generate_tts(req: TTSRequest):
         raise HTTPException(status_code=400, detail="文本不能为空")
 
     lang = normalize_lang(req.lang)
+    # 中文提前做一层文本清洗，规范省略号和特殊引号，避免影响分句和发音
+    if lang == "zh":
+        text = normalize_zh_text(text)
     tts, model_key = get_tts(lang)
 
     ts = int(time.time())
     file_id = uuid.uuid4().hex[:8]
     wav_path = OUTPUT_DIR / f"tts_{ts}_{file_id}.wav"
 
-    tts.tts_to_file(text=text, file_path=str(wav_path))
+    # 使用 Synthesizer 接口生成波形并保存为 wav
+    try:
+        if model_key == "zh":
+            # 中文：按中文标点手动分句，逐句合成并拼接，避免单句过长或切分不当导致内容丢失
+            sentences = split_zh_sentences(text)
+            wav_all: list[float] = []
+            for sent in sentences:
+                sent = sent.strip()
+                if not sent:
+                    continue
+                try:
+                    w = tts.tts(text=sent, split_sentences=False)
+                except RuntimeError as e:
+                    msg = str(e)
+                    if "Kernel size can't be greater than actual input size" in msg:
+                        # 该子句过短或异常，跳过这一句，继续后面的内容
+                        continue
+                    raise
+                wav_all.extend(list(w))
+                # 句子之间加一点静音
+                wav_all.extend([0.0] * 8000)
+            if not wav_all:
+                raise HTTPException(
+                    status_code=400,
+                    detail="当前文本无法被中文语音模型正常处理，请尝试简化或分段输入。",
+                )
+            wav = np.array(wav_all, dtype=np.float32)
+        else:
+            # 英文/日文：使用 Synthesizer 内置分句逻辑
+            split = model_key == "en"
+            wav = tts.tts(text=text, split_sentences=split)
+    except RuntimeError as e:
+        msg = str(e)
+        if "Kernel size can't be greater than actual input size" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail="当前文本过短或包含无法处理的内容，导致语音模型出错，请尝试输入更长、语句更完整的文本。",
+            ) from e
+        raise
+
+    tts.save_wav(wav=wav, path=str(wav_path))
 
     # 去掉音频头尾的长静音/底噪
     try:

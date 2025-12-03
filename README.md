@@ -274,3 +274,145 @@ docker run -d --name offline-tts --network=none offline-tts:latest
 
 如需针对你的真实部署环境（操作系统 / 内网结构）定制更具体的脚本或自动化流程，可以在此基础上再做扩展。
 
+---
+
+## 6. 在新环境快速拉起项目
+
+当你在另一台机器（或服务器）上使用这个项目时，一般只需要下面几步。
+
+### 6.1 拉代码 + 模型（Git + LFS）
+
+```bash
+git clone git@github.com:EvanZhaoi/tts.git
+cd tts
+
+# 安装并初始化 Git LFS（新机器只需执行一次）
+git lfs install
+
+# 拉下大模型文件（tts-server/models 下的内容）
+git lfs pull
+```
+
+### 6.2 准备 Python 环境
+
+```bash
+cd tts-server
+
+python3 -m venv venv
+source venv/bin/activate            # Windows 用 venv\Scripts\activate
+
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+只需要安装 `requirements.txt` 中列出的依赖，其它你在开发机上尝试过的临时包不需要搬到新环境。
+
+### 6.3 安装必要的系统依赖
+
+后端只依赖极少量系统工具：
+
+- 必需：
+  - `ffmpeg`（pydub 写 wav 用）
+- 建议安装：
+  - `espeak-ng` / `espeak`（部分英文模型的分词/发音辅助）
+
+示例：
+
+- macOS（Homebrew）：
+
+  ```bash
+  brew install ffmpeg espeak-ng
+  ```
+
+- Ubuntu / Debian：
+
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y ffmpeg espeak-ng
+  ```
+
+> 日语支持目前仍是实验性质，如果新环境暂时不需要日语，可以先不安装 MeCab 相关依赖。
+
+### 6.4 启动后端和前端
+
+后端：
+
+```bash
+cd tts-server
+source venv/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+前端：
+
+```bash
+cd tts-web
+# 确认 script.js 里的 API_BASE 指向后端地址
+open index.html       # macOS；Windows 直接双击 index.html
+```
+
+在浏览器中输入文本、选择语言后即可调用后端生成并下载语音。
+
+### 6.5 在新环境中用 Docker 构建并运行（含 outputs 映射）
+
+在新环境拉下代码后，如果希望用 Docker 运行后端并将生成的音频映射到本地磁盘，可以按下面步骤：
+
+1. 在新环境构建镜像（需要一次联网以安装依赖）：
+
+   ```bash
+   cd tts/tts-server
+   docker build -t offline-tts:latest .
+   ```
+
+2. 选择一个本地目录作为音频输出目录（例如 `/path/to/tts-outputs`），并运行容器时做目录映射：
+
+   ```bash
+   mkdir -p /path/to/tts-outputs
+
+   docker run -d \
+     --name offline-tts \
+     -p 8000:8000 \
+     -v /path/to/tts-outputs:/app/outputs \
+     offline-tts:latest
+   ```
+
+   说明：
+   - 容器内后端仍然把音频写到 `/app/outputs`；
+   - 通过 `-v` 映射，实际文件会写入宿主机的 `/path/to/tts-outputs` 目录，方便备份和查看；
+   - 如果希望容器完全不访问外网，可以额外加上 `--network=none`。
+
+3. 前端与非 Docker 情况相同，只需把 `API_BASE` 指向运行容器的主机 IP（例如 `http://<服务器IP>:8000`），即可生成并下载语音。 
+
+### 6.6 前端也使用 Docker（Nginx 托管静态页面）
+
+你也可以把前端打包成一个单独的 Docker 镜像，由 Nginx 提供静态页面：
+
+1. 在新环境构建前端镜像：
+
+   ```bash
+   cd tts/tts-web
+   docker build -t offline-tts-web:latest .
+   ```
+
+2. 运行前端容器（例如映射到宿主机 8080 端口）：
+
+   ```bash
+   docker run -d \
+     --name offline-tts-web \
+     -p 8080:80 \
+     offline-tts-web:latest
+   ```
+
+3. 浏览器访问前端页面：
+
+   - 如果前后端在同一台机器上运行（后端映射 `8000`，前端映射 `8080`），可以：
+     - 在浏览器打开：`http://<服务器IP>:8080`
+     - 并在 `tts-web/script.js` 中将 `API_BASE` 设置为：  
+       ```js
+       const API_BASE = "http://<服务器IP>:8000";
+       ```
+   - 如果前端和后端在不同机器上，只要把 `API_BASE` 改成后端那台机器的地址即可。
+
+这样，前端和后端都由 Docker 托管：  
+- 后端容器负责 TTS 生成，音频输出映射到宿主机目录；  
+- 前端容器负责提供静态页面，浏览器通过 HTTP 调用后端生成并下载音频。 
